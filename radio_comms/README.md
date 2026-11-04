@@ -5,14 +5,18 @@ for the Domer Rover team, 2024-2026.
 
 ## Maintainers
 
-Please add your name and email below if you help maintain this codebase:
+**Please add your name and email below if you help maintain this codebase.***
 
-- Henry Jochaniewicz (hjochani@nd.edu). I am abroad for Spring '26 but please
-do not hesitate to slack or contact me.
+- Henry Jochaniewicz (hjochani@nd.edu), graduating 2027
+    - Please do not hestitate to contact me even after I graduate and really
+    need something from this codebase
 
 ## TODO
 
-- Adding authors and modification dates at the top of all files.
+- Adding authors (or any modifiers) and modification dates at the top of all files.
+
+- Adding a proper user interface and command-line handling. Use the `argparse` library
+
 - The socket reader writer is incomplete. There can only be one
 connection between the rover and base station, and if the connection
 fails, the entire program must be restarted. Additionally,
@@ -21,6 +25,10 @@ and the rover side will not continue in the program until a connection
 is made.
     - This is simply because of my lack of understanding of sockets.
     I am sure that this is not too complicated to fix.
+    - N.B. This is mostly fixed by changing things to UDP rather than TCP.
+    This *does* mean that there must be some other check when the rover and
+    base station are disconnected / cannot send packets directly to one another.
+
 - Dynamically changing between the two connection types as needed.
     - This feels very, *very* hard. I made it simple to swap between
     them (simply change out `SocketReaderWriter` for `SerialReaderWriter`),
@@ -28,9 +36,17 @@ is made.
     - My best guess is to have the rover find its own distance from
     the base station and change out the variable once a certain distance
     threshold is met, or if heartbeats aren't being received.
+    - N.B. This is fairly straightforward. The rover should just send a heartbeat packet
+    every N seconds, and if that packet is not acknowledged, a certain number 
+    of times, switch communication methods.
+
+- The data structure for already seen messages is messy. It stores everything
+in a set and simply removes 
+
 - I *believe* acknowledgments are being set up well: there is a concurrent
 set in the processing functions on both sides to catch acknowledgments.
 However, it is possible that there are redundant messages being sent.
+
 - It would be good to write a simple abstraction over creating
 messages and decoding messages of different types.
     - e.g. make a function like:
@@ -41,9 +57,11 @@ messages and decoding messages of different types.
     for each message type. This has already been done
     for the acknowledgments (in `messageProcessor.py`), but it might
     be best to abstract this to its own module?
+
 - Currently, driving from the UI will simple have the rover
 continue driving at that speed indefinitely. There should be a time
 limit on this.
+
 - I haven't tested it in a while, but I ran into problems when I tried
 to send many photos at once or send really, really large photos where
 I was definitely losing data. I have several theories for why this
@@ -58,6 +76,7 @@ was happening:
     the receiver sends some sort of `reading-failed` message, i.e.
     that it has finished reading, so that the sender can keep sending
     more messages.
+
 - Controller support for driving.
 
 ## Software Setup
@@ -102,11 +121,9 @@ git push -u origin <new_branch>
 
 #### Setup
 
-I recommend setting up a python virtual environment in the directory 
-JUST OUTSIDE of the main repo. 
+Set up a python virtual environment in the directory JUST OUTSIDE of the main repo. 
 If you want to include it in the repo itself, you ***must*** add the name 
 of the directory to the `.gitignore` file, i.e. this must not be added to the repository itself.
-To avoid this, set up the virtual environment just outside of the main Domer Rover repo
 
 To set up a virtual environment:
 - On Unix (Linux / Mac):
@@ -115,7 +132,7 @@ To set up a virtual environment:
 python3 -m venv <environment_name>
 ```
 
-- On a Windows:
+- On Windows:
 
 ```sh
 python -m venv <environment_name>
@@ -128,7 +145,7 @@ To activate the virtual environment:
 source <environment_name>/bin/activate
 ```
 
-- On a Windows:
+- On Windows:
 
 ```sh
 .\<environment_name>\Scripts\Activate
@@ -174,7 +191,7 @@ import <Import Name>
 
 | Package Name      | Import Name   | Reason                        |
 | ----------------- | ------------- | ----------------------------  |
-| `pyzmq`           | `zmq`         | For sockets                   |
+| `pyzmq`           | `zmq`         | For sockets (now unused)      |
 | `opencv-python`   | `cv2`         | Video feed and camera capture |
 | `numpy`           | `numpy`       | Array math                    |
 | `pyserial`        | `serial`      | Serial port communications    |
@@ -188,14 +205,19 @@ in order to actually run the 2.4GHz connection over the rover.
 For regularly ssh-ing into the Jetson over ND-Guest, ssh into
  `jetsonson@jetsonson.dhcp.nd.edu` (you can thank Sean for the naming).
 
+> This is now deprecated, since ND-Guest is no longer the main point
+> of connection. The Jetson computer should be accessible via eduroam
+> by the same DHCP address, though.
+
 As a note, here are the addresses of relevant items:
 
 | The thing | Address       |
 | --------- | ------------- |
-| Bullet-1  | 192.168.11.1 (may be 192.168.11.180) |
+| Bullet-1  | 192.168.11.180|
 | Bullet-2  | 192.168.11.20 |
-| Jetson    | 192.168.11.17 |
-| User      | 192.168.11.179|
+| Jetson    | 192.168.11.17  (manual setup)|
+| Gerbil    | 192.168.11.178 (manual setup)|
+| User      | 192.168.11.179 (manual setup)|
 
 The rover should automatically update its IP address to the correct one
 once the communications system is properly set up.
@@ -449,6 +471,8 @@ At a high level, there is a **server**, `roverComms.py`, and
 a **client**, `baseStationComms.py`. Each in essence reads for
 messages from the other and performs actions based on the type,
 and sends messages to the other when relevant.
+- These are connected via either serial (`SerialReaderWriter`) or 
+via UDP connectionless packets (`SocketReaderWriter`).
 - the **server** has three concurrent threads:
     - Reading: the main thread, which reads across the port (or socket)
     for messages, and when received, adds them to a concurrent queue
@@ -506,6 +530,7 @@ This should have really been called *opcode* or something similar.
 to keep an order on messages. For example, it is used in sending images
 to make sure the order between payloads is maintained so the original message
 can be recovered.
+    - This ought to be automated.
 - the payload differs per purpose. In most cases, it is obvious, but
 here are a few special cases:
     - the `ACK` purpose has the ID of the message for which it is acknowledging

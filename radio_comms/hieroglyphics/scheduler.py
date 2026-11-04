@@ -15,6 +15,7 @@ import time
 class Scheduler:
 
     RETRANSMISSION_COUNTER=1
+    BUFFER_BOUND=10
 
     # topics: dict[str (topic name), int (wrr value)]
     # messages: dict[str (topic name), deque[message]]
@@ -23,8 +24,8 @@ class Scheduler:
         self.topics : dict[str, int] = topics
         self.topics['acknowledgment'] = 5
         self.messages : dict[str, deque[Message]] = {topic : deque() for topic in self.topics}
-        self.retransmissionQueue : deque[Message] = deque()
-        self.acknowledgedMessageIDs : ConcurrentSet = ConcurrentSet()
+        self.retransmissionQueue : MessageQueue = MessageQueue()
+        # self.acknowledgedMessageIDs : ConcurrentSet = ConcurrentSet()
 
     def set_topics(self, topics) -> None:
         self.topics = topics
@@ -50,32 +51,42 @@ class Scheduler:
         self.messages[topic].extend(messageList)
 
     def handleAcknowledgment(self, messageID : int):
-        self.acknowledgedMessageIDs.add(messageID)
+        # self.acknowledgedMessageIDs.add(messageID)
+        self.retransmissionQueue.removeWithID(messageID)
 
-    def wasMessageAcknowledged(self, message : Message):
-        return message.msg_id in self.acknowledgedMessageIDs
+    # def wasMessageAcknowledged(self, message : Message):
+    #     return message.msg_id in self.acknowledgedMessageIDs
+
+    # def removeAcknowledgment(self, message : Message):
+    #     self.acknowledgedMessageIDs.remove(message.msg_id)
+
+    def sendMessagesFromTopics(self):
+        for topic in self.topics: # all the topic names
+            c = 0 # packet counter
+            while self.messages[topic] and c < self.topics[topic]:
+                currentMessage = self.messages[topic].popleft()
+                self.readerWriter.writeMessage(currentMessage)
+                print(f'sent message of purpose {currentMessage.purpose.name}')
+
+                if currentMessage.purpose != Message.Purpose.ACK:
+                    self.retransmissionQueue.append(currentMessage)
+                    if len(self.retransmissionQueue) >= Scheduler.BUFFER_BOUND:
+                        return
+
+                c += 1
+                # except Exception as e:
+                #    print(f'--Error: in the scheduler loop: {e}')
 
     # weighted round robin algorithm?
     # implement with a thread, I think
     def sendMessages(self, messageQueue : MessageQueue):
-     try:
         print("started up the wrr", self.topics)
         start = time.time()
         while messageQueue.isRunning():
-            for topic in self.topics: # all the topic names
-                c = 0 # packet counter
-                while self.messages[topic] and c < self.topics[topic]:
-                    try:
-                        currentMessage = self.messages[topic].popleft()
-                        self.readerWriter.writeMessage(currentMessage)
-                        print(f'sent message of purpose {currentMessage.purpose.name}')
-
-                        if currentMessage.purpose != Message.Purpose.ACK:
-                            self.retransmissionQueue.append(currentMessage)
-
-                        c += 1
-                    except Exception as e:
-                        print(f'--Error: in the scheduler loop: {e}')
+            if len(self.retransmissionQueue) < Scheduler.BUFFER_BOUND:
+                self.sendMessagesFromTopics()
+            # except Exception as e:
+            #   print('Scheduler problem', e)
 
             # pop a message
             if time.time() - start < 1:
@@ -83,13 +94,14 @@ class Scheduler:
             start = time.time()
             limit = min(Scheduler.RETRANSMISSION_COUNTER, len(self.retransmissionQueue))
             for _ in range(limit):
-                currentMessage = self.retransmissionQueue.popleft()
-                if not self.wasMessageAcknowledged(currentMessage):
-                    self.readerWriter.writeMessage(currentMessage)
-                    print('readded message')
-                    self.retransmissionQueue.append(currentMessage)
-     except Exception as e:
-        print('scheduler', e)
+                currentMessage = self.retransmissionQueue.pop()
+                # if not self.wasMessageAcknowledged(currentMessage):
+                self.readerWriter.writeMessage(currentMessage)
+                print(f'Message with id {currentMessage.msg_id} was not acknowledged. Requeueing...')
+                self.retransmissionQueue.append(currentMessage)
+
+     # except Exception as e:
+     #   print('scheduler', e)
         # talkerNode.destroy_node()
         # rclpy.shutdown()
         # arduino.close()

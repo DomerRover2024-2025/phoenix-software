@@ -17,6 +17,17 @@ class MessageQueue:
             self.queue.append(message)
             self.condition.notify()
 
+    # really only useful for the retransmission queue.
+    def removeWithID(self, messageID : int):
+        with self.condition:
+            index = None
+            for i, message in enumerate(self.queue):
+                if message.msg_id == messageID:
+                    index = i
+                    break
+            if index is not None:
+                del self.queue[index]
+
     # Blocking pop.
     def pop(self) -> Message:
         with self.condition:

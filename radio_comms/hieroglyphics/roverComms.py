@@ -9,9 +9,11 @@ from serial import Serial
 import cv2
 import os
 import struct
+import argparse
 import numpy as np
-import concurrent.futures
+import threading
 import time
+import sys
 
 from message import Message
 from scheduler import Scheduler
@@ -22,12 +24,16 @@ from serialReaderWriter import SerialReaderWriter
 from readerWriter import ReaderWriter
 from concurrentSet import ConcurrentSet
 
-def main():
-    # port = '/dev/cu.usbserial-BG00HO5R'
-    # port = '/dev/tty.usbserial-B001VC58'
-    #port = 'COM4'
-    #port = '/dev/ttyTHS1'
-    port = '/dev/ttyUSB0'
+def main(args):
+    if len(args) > 0:
+        port = args[0]
+    else:
+        port = '/dev/ttyUSB0'
+
+    if len(args) > 1:
+        host = args[1]
+    else:
+        host = 'localhost'
     baud = 57600
     timeout = 0.1
 
@@ -42,14 +48,17 @@ def main():
     }
 
     messageQueue : MessageQueue = MessageQueue()
-    readerWriter : ReaderWriter = SerialReaderWriter(port, baud, timeout, messageQueue)
-    # readerWriter : ReaderWriter = SocketReaderWriter('localhost', 9999, messageQueue, rover=True)
+    # readerWriter : ReaderWriter = SerialReaderWriter(port, baud, timeout, messageQueue)
+    readerWriter : ReaderWriter = SocketReaderWriter(host, 9998, messageQueue, rover=True)
     scheduler = Scheduler(readerWriter=readerWriter, topics=topics)
 
-    executor = concurrent.futures.ThreadPoolExecutor(4)
-    future_scheduler = executor.submit(scheduler.sendMessages, messageQueue)
-    future_msg_process = executor.submit(process_messages, messageQueue, scheduler)
+    scheduler_thread = threading.Thread(target=scheduler.sendMessages, args=(messageQueue,))
+    process_messages_thread = threading.Thread(target=process_messages, args=(messageQueue, scheduler))
+    threads = [scheduler_thread, process_messages_thread]
     # future_video = executor.submit(capture_video)
+
+    for t in threads:
+        t.start()
 
     print('entering read loop')
 
@@ -64,11 +73,12 @@ def main():
 
     except KeyboardInterrupt:
         pass
-    except Exception as e:
-        print('rover reading: ', e)
+    # except Exception as e:
+    #     print('rover reading: ', e)
         
     messageQueue.shutdown()
-    executor.shutdown()
+    for t in threads:
+        t.join()
 
 # capture_video_eh = False
 
@@ -92,16 +102,22 @@ def process_messages(messageQueue : MessageQueue, scheduler : Scheduler) -> None
     ]
 
     # TODO: Change these lines out when trying to write to the motors.
-    arduinoPath = '/dev/ttyACMO'
-    # arduinoPath = None
+    # arduinoPath = '/dev/ttyACMO'
+    arduinoPath = None
 
     messageProcessor = RoverMessageProcessor(MSG_LOG, scheduler, arduinoPath)
-    alreadyProcessedMessages = ConcurrentSet()
 
-    try:
-     while messageQueue.isRunning():
+    # we are guaranteed only a certain number of outgoing messages.
+    alreadyProcessedMessages = ConcurrentSet()
+    oldSetOfProcessedMessages = ConcurrentSet()
+
+    while messageQueue.isRunning():
 
         currentMessage = messageQueue.pop()
+
+        if currentMessage is None:
+            continue
+
         Message.log_message(currentMessage, MSG_LOG)
 
         if currentMessage.purpose == Message.Purpose.ACK:
@@ -111,10 +127,14 @@ def process_messages(messageQueue : MessageQueue, scheduler : Scheduler) -> None
         acknowledgment = messageProcessor.generateAcknowledgment(currentMessage) 
         scheduler.addMessage(acknowledgment, 'acknowledgment')
 
-        if currentMessage.msg_id in alreadyProcessedMessages:
+        if currentMessage.msg_id in alreadyProcessedMessages or currentMessage.msg_id in oldSetOfProcessedMessages:
             continue
 
         alreadyProcessedMessages.add(currentMessage.msg_id)
+
+        if len(alreadyProcessedMessages) >= Scheduler.BUFFER_BOUND:
+            oldSetOfProcessedMessages = alreadyProcessedMessages
+            alreadyProcessedMessages = ConcurrentSet()
 
         if currentMessage.purpose == Message.Purpose.ERROR:
             messageProcessor.handleDebugMessage(currentMessage)
@@ -124,21 +144,21 @@ def process_messages(messageQueue : MessageQueue, scheduler : Scheduler) -> None
 
         elif currentMessage.purpose == Message.Purpose.VIDEO:
             messageProcessor.handleVideoToggleMessage(currentMessage) 
-        
+
         elif currentMessage.purpose == Message.Purpose.HIGH_DEFINITION_PHOTO: 
             messageProcessor.handleHighDefPhotoRequestMessage(currentMessage)
-        
+
         elif currentMessage.purpose == Message.Purpose.LOW_DEFINITION_PHOTO:
             messageProcessor.handleLowDefPhotoRequestMessage(currentMessage)
-        
+
         elif currentMessage.purpose == Message.Purpose.FILE_CONTENTS:
             messageProcessor.handleFileContentsRequestMessage(currentMessage)
-        
+
         else:
             print('--Error: message matched no known purposes.')
-    except Exception as e:
-        print('--error(process messages): ', e)
-    messageProcessor.imageCapturer.stopTakingVideo()
+        # except Exception as e:
+        #    print('--error(process messages): ', e)
+        messageProcessor.imageCapturer.stopTakingVideo()
 
 # import rclpy
 # from rclpy.node import Node
@@ -165,4 +185,4 @@ def process_messages(messageQueue : MessageQueue, scheduler : Scheduler) -> None
 #         self.serialPort.write(msg.data.encode())
 
 if __name__ == '__main__':
-    main()
+    main(sys.argv[1:])

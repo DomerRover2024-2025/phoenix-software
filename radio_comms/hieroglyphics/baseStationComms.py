@@ -6,8 +6,9 @@
 ###################
 
 import subprocess
-import concurrent.futures
+import threading
 import traceback
+import sys
 from serial import Serial
 
 from message import Message
@@ -29,11 +30,18 @@ from concurrentSet import ConcurrentSet
 ##### MAIN #####
 ################
 
-def main():
-    port = "/dev/cu.usbserial-BG00HO5R"
-    # port = "/dev/cu.usbserial-B001VC58"
-    # port = "COM4"
-    #port = "/dev/ttyUSB0"
+def main(args):
+    if len(args) > 0:
+        port = args[0]
+    else:
+        port = "/dev/cu.usbserial-BG00HO5R"
+        # port = "/dev/cu.usbserial-B001VC58"
+        # port = "COM4"
+        #port = "/dev/ttyUSB0"
+    if len(args) > 1:
+        host = args[1]
+    else:
+        host = 'localhost'
     baud = 57600
     timeout = 0.1
 
@@ -44,8 +52,8 @@ def main():
     open(MSG_LOG, 'w').close()
 
     messageQueue : MessageQueue = MessageQueue()
-    readerWriter : ReaderWriter = SerialReaderWriter(port, baud, timeout, messageQueue)
-    # readerWriter : ReaderWriter = SocketReaderWriter('localhost', 9999, messageQueue, rover=False)
+    # readerWriter : ReaderWriter = SerialReaderWriter(port, baud, timeout, messageQueue)
+    readerWriter : ReaderWriter = SocketReaderWriter(host, 9998, messageQueue, rover=False)
 
     topics = {
         'all': 1
@@ -56,20 +64,24 @@ def main():
 
     # 3 concurrent threads: one read from serial port, 
     # one for processing messages, one for writing messages
-    executor = concurrent.futures.ThreadPoolExecutor(4)
-    future = executor.submit(processMessages, messageQueue, scheduler, ERR_LOG)
-    future = executor.submit(readMessages, readerWriter, messageQueue)
-    future = executor.submit(scheduler.sendMessages, messageQueue)
+    threads = [
+        threading.Thread(target=processMessages, args=(messageQueue, scheduler, ERR_LOG)),
+        threading.Thread(target=readMessages, args=(readerWriter, messageQueue)),
+        threading.Thread(target=scheduler.sendMessages, args=(messageQueue,)),
+    ]
+
+    for t in threads:
+        t.start()
 
     try:
         userInterface.inputLoop()
     except KeyboardInterrupt:
-        exit_main(executor, messageQueue)
+        exit_main(threads, messageQueue)
         exit(0)
     except Exception as e:
-        exit_main(executor, messageQueue)
+        exit_main(threads, messageQueue)
         exit(1)
-    exit_main(executor, messageQueue)
+    exit_main(threads, messageQueue)
 
 #####################
 ##### FUNCTIONS #####
@@ -86,56 +98,61 @@ def readMessages(readerWriter : ReaderWriter, messageQueue : MessageQueue) -> No
 def processMessages(messageQueue : MessageQueue, scheduler : Scheduler, ERR_LOG : str) -> None:
     messageProcessor = BaseStationMessageProcessor(ERR_LOG, scheduler)
     alreadyProcessedMessages = ConcurrentSet()
-    try:
-     while messageQueue.isRunning():
-        print('popping message...')
-        currentMessage : Message = messageQueue.pop()
-        if currentMessage is None:
-            return None
+    oldSetOfProcessedMessages = ConcurrentSet()
 
-        print(f"message popped of purpose {currentMessage.purpose}")
+    while messageQueue.isRunning():
+       print('popping message...')
+       currentMessage : Message = messageQueue.pop()
+       if currentMessage is None:
+           return None
 
-        if currentMessage.purpose == Message.Purpose.ACK:
-            messageProcessor.handleAcknowledgment(currentMessage)
-            continue
+       print(f"message popped of purpose {currentMessage.purpose}")
 
-        acknowledgment = messageProcessor.generateAcknowledgment(currentMessage) 
-        scheduler.addMessage(acknowledgment, 'acknowledgment')
+       if currentMessage.purpose == Message.Purpose.ACK:
+           messageProcessor.handleAcknowledgment(currentMessage)
+           continue
 
-        # We've already processed this message.
-        if currentMessage.msg_id in alreadyProcessedMessages:
-            continue
+       acknowledgment = messageProcessor.generateAcknowledgment(currentMessage) 
+       scheduler.addMessage(acknowledgment, 'acknowledgment')
 
-        alreadyProcessedMessages.add(currentMessage.msg_id)
+       # We've already processed this message.
+       if currentMessage.msg_id in alreadyProcessedMessages or currentMessage.msg_id in oldSetOfProcessedMessages:
+           continue
 
-        if currentMessage.purpose == Message.Purpose.ERROR: 
-            messageProcessor.handleDebugMessage(currentMessage)
+       alreadyProcessedMessages.add(currentMessage.msg_id)
 
-        elif currentMessage.purpose == Message.Purpose.HEARTBEAT: 
-            pass
+       if len(alreadyProcessedMessages) >= Scheduler.BUFFER_BOUND:
+            oldSetOfProcessedMessages = alreadyProcessedMessages
+            alreadyProcessedMessages = ConcurrentSet()
 
-        elif currentMessage.purpose == Message.Purpose.VIDEO:
-            messageProcessor.handleVideoMessage(currentMessage)
 
-        elif currentMessage.purpose == Message.Purpose.HIGH_DEFINITION_PHOTO:
-            messageProcessor.handleHighDefPhotoMessage(currentMessage)
+       if currentMessage.purpose == Message.Purpose.ERROR: 
+           messageProcessor.handleDebugMessage(currentMessage)
 
-        elif currentMessage.purpose == Message.Purpose.LOW_DEFINITION_PHOTO:
-            messageProcessor.handleLowDefPhotoMessage(currentMessage)
+       elif currentMessage.purpose == Message.Purpose.HEARTBEAT: 
+           pass
 
-        elif currentMessage.purpose == Message.Purpose.FILE_CONTENTS:
-            messageProcessor.readFileOverPort(currentMessage) 
+       elif currentMessage.purpose == Message.Purpose.VIDEO:
+           messageProcessor.handleVideoMessage(currentMessage)
 
-        else:
-            print("unknown message purpose")
-    except Exception as e:
-        print(f"-- --{e}-- --")
+       elif currentMessage.purpose == Message.Purpose.HIGH_DEFINITION_PHOTO:
+           messageProcessor.handleHighDefPhotoMessage(currentMessage)
+
+       elif currentMessage.purpose == Message.Purpose.LOW_DEFINITION_PHOTO:
+           messageProcessor.handleLowDefPhotoMessage(currentMessage)
+
+       elif currentMessage.purpose == Message.Purpose.FILE_CONTENTS:
+           messageProcessor.readFileOverPort(currentMessage) 
+
+       else:
+           print("unknown message purpose")
 
 # everything to do on shutdown
-def exit_main(executor : concurrent.futures.ThreadPoolExecutor, messageQueue : MessageQueue):
+def exit_main(threads : list[threading.Thread], messageQueue : MessageQueue):
     messageQueue.shutdown()
     print('shut down queue')
-    executor.shutdown(wait=False, cancel_futures=True)
+    for t in threads:
+        t.join()
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
