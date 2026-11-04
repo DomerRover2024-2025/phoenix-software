@@ -16,7 +16,7 @@ class RoverMessageProcessor:
             self.arduino = Serial(arduinoPath)
         else:
             self.arduino = None
-        # self.imageCapturer = ImageCapturer(cameraPaths)
+        self.imageCapturer = ImageCapturer(cameraPaths)
 
     def generateAcknowledgment(self, message : Message) -> Message:
         return self.messageProcessor.generateAcknowledgment(message)

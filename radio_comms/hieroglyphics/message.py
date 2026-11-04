@@ -14,6 +14,8 @@ from enum import IntEnum
     # SIZE OF PAYLOAD: 4 BYTES?
     # PAYLOAD: VARIABLE BYTES?
     # CHECKSUM: 1 BIT
+
+MAX_MESSAGE_SIZE = 1024
 class Message:
 
     message_count = 0
@@ -31,6 +33,7 @@ class Message:
         CAMERA_VISION=9
         FILE_CONTENTS=10
         REQUEST_FILE=11
+        EXISTENCE=12
 
     # I am necessitating that the payload ALREADY BE a byte object.
     # I do not know how big it is.
@@ -75,30 +78,30 @@ class Message:
         b_size = struct.pack(">L", self.size_of_payload)
         bytestring = b_id + b_purpose + b_number + b_size + self.payload
         return bytestring + Message.calculate_checksum(bytestring)
-    
-    def set_purpose(self, purpose):
+
+    def set_purpose(self, purpose : int):
         self.purpose = Message.Purpose(purpose)
 
-    def set_payload(self, payload):
+    def set_payload(self, payload : bytes):
         self.payload = payload
         self.size_of_payload = len(payload)
-    
-    def set_size(self, size):
+
+    def set_size(self, size : int):
         self.size_of_payload = size
 
     def __bool__(self):
         return (self.purpose is not None) and (self.payload is not None)
-    
+
     def __str__(self):
         string = f"ID,{self.msg_id}:purpose,{self.purpose}:number,{self.number}:size,{self.size_of_payload}"
         if not self: # if the message is invalid
             string = f"INVALID|{string}"
         return string
-    
+
     @staticmethod
     def calculate_checksum(bytestring: str):
         return struct.pack(">B", reduce(lambda a,b: a ^ b, bytestring))
-    
+
     @staticmethod
     def log_message(msg : 'Message', filename : str):
         with open(filename, 'a') as f:
